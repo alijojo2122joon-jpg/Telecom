@@ -3,6 +3,7 @@ package com.telecomshield.mobile
 import android.annotation.SuppressLint
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.LinkProperties
 import android.net.NetworkCapabilities
 import android.net.TrafficStats
 import android.net.wifi.WifiManager
@@ -35,6 +36,13 @@ data class InterfaceInfo(
     val mtu: Int,
     val ipv4: List<String>,
     val ipv6: List<String>
+)
+
+data class NetDetails(
+    val gateway: String?,
+    val dns: List<String>,
+    val linkAddrs: List<String>,
+    val domains: String?
 )
 
 object NetMonitor {
@@ -103,6 +111,17 @@ object NetMonitor {
             rxMobile = TrafficStats.getMobileRxBytes(),
             txMobile = TrafficStats.getMobileTxBytes()
         )
+    }
+
+    fun details(ctx: Context): NetDetails {
+        val cm = ctx.applicationContext
+            .getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val net = cm.activeNetwork
+        val lp: LinkProperties? = net?.let { cm.getLinkProperties(it) }
+        val dns = lp?.dnsServers?.mapNotNull { it.hostAddress } ?: emptyList()
+        val gw = lp?.routes?.firstOrNull { it.isDefaultRoute }?.gateway?.hostAddress
+        val la = lp?.linkAddresses?.mapNotNull { it.address?.hostAddress } ?: emptyList()
+        return NetDetails(gw, dns, la, lp?.domains)
     }
 
     private fun firstIpv4(): String? = runCatching {

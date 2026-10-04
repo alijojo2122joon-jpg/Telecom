@@ -22,9 +22,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.DataUsage
-import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Dashboard
+import androidx.compose.material.icons.filled.DataUsage
+import androidx.compose.material.icons.filled.Radar
+import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -33,9 +34,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
@@ -62,6 +63,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private val Red = Color(0xFFE53935)
+private val Green = Color(0xFF66BB6A)
 private val Bg = Color(0xFF0A0A0A)
 private val SurfaceC = Color(0xFF17191C)
 private val VariantC = Color(0xFF202327)
@@ -101,13 +103,21 @@ fun AppRoot() {
         runCatching { permLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION) }
     }
 
-    val tabs = listOf("Overview", "Speed", "Tools", "Usage")
-    val icons = listOf(Icons.Filled.Dashboard, Icons.Filled.Speed, Icons.Filled.Build, Icons.Filled.DataUsage)
+    val tabs = listOf("Overview", "Speed", "Scan", "Tools", "Usage")
+    val icons = listOf(
+        Icons.Filled.Dashboard, Icons.Filled.Speed, Icons.Filled.Radar,
+        Icons.Filled.Build, Icons.Filled.DataUsage
+    )
     var selected by remember { mutableIntStateOf(0) }
 
     Scaffold(containerColor = Bg) { inner ->
         Column(modifier = Modifier.padding(inner)) {
-            TabRow(selectedTabIndex = selected, containerColor = Bg, contentColor = Red) {
+            ScrollableTabRow(
+                selectedTabIndex = selected,
+                containerColor = Bg,
+                contentColor = Red,
+                edgePadding = 8.dp
+            ) {
                 tabs.forEachIndexed { i, title ->
                     Tab(
                         selected = selected == i,
@@ -120,7 +130,8 @@ fun AppRoot() {
             when (selected) {
                 0 -> OverviewScreen()
                 1 -> SpeedScreen()
-                2 -> ToolsScreen()
+                2 -> ScanScreen()
+                3 -> ToolsScreen()
                 else -> UsageScreen()
             }
         }
@@ -175,7 +186,7 @@ private fun Header() {
         Image(
             painter = painterResource(R.drawable.logo_full),
             contentDescription = "Amiri Attack",
-            modifier = Modifier.height(110.dp)
+            modifier = Modifier.height(108.dp)
         )
     }
 }
@@ -184,11 +195,20 @@ private fun Header() {
 private fun OverviewScreen() {
     val ctx = LocalContext.current
     var snap by remember { mutableStateOf<NetSnapshot?>(null) }
+    var det by remember { mutableStateOf<NetDetails?>(null) }
+    var pub by remember { mutableStateOf<Map<String, String>?>(null) }
+    var pubErr by remember { mutableStateOf(false) }
+
     LaunchedEffect(Unit) {
         while (true) {
             snap = withContext(Dispatchers.IO) { NetMonitor.snapshot(ctx) }
+            det = withContext(Dispatchers.IO) { NetMonitor.details(ctx) }
             delay(2000)
         }
+    }
+    LaunchedEffect(Unit) {
+        runCatching { pub = withContext(Dispatchers.IO) { Scanner.publicIpInfo() } }
+            .onFailure { pubErr = true }
     }
 
     Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
@@ -198,18 +218,30 @@ private fun OverviewScreen() {
             Metric("Status", s?.connType ?: "…", strong = true)
             Metric("Carrier", s?.carrier ?: "…")
             Metric("Metered", if (s == null) "…" else if (s.isMetered) "Yes" else "No")
-            Metric("IP address", s?.ipv4 ?: "…")
-            if (s != null && s.downKbps > 0)
-                Metric("Est. link down", "${s.downKbps / 1000} Mbps")
-            if (s != null && s.upKbps > 0)
-                Metric("Est. link up", "${s.upKbps / 1000} Mbps")
+            Metric("Local IP", s?.ipv4 ?: "…")
+            if (s != null && s.downKbps > 0) Metric("Est. link down", "${s.downKbps / 1000} Mbps")
+            if (s != null && s.upKbps > 0) Metric("Est. link up", "${s.upKbps / 1000} Mbps")
         }
         if (s?.connType == "Wi-Fi") {
             SectionCard("Wi-Fi") {
                 Metric("Network", s.wifiSsid ?: "(hidden — allow location)")
-                Metric("Signal", "${wifiLevel(s.wifiRssi)}  ${s.wifiRssi?.let { "($it dBm)" } ?: ""}")
+                Metric("Signal", "${wifiLevel(s.wifiRssi)} ${s.wifiRssi?.let { "($it dBm)" } ?: ""}")
                 Metric("Link speed", s.wifiLinkMbps?.let { "$it Mbps" } ?: "—")
                 Metric("Frequency", s.wifiFreqMhz?.let { "$it MHz" } ?: "—")
+            }
+        }
+        det?.let { d ->
+            SectionCard("Network details") {
+                Metric("Gateway", d.gateway ?: "—")
+                Metric("DNS", if (d.dns.isEmpty()) "—" else d.dns.joinToString(", "))
+                if (!d.domains.isNullOrBlank()) Metric("Domain", d.domains)
+            }
+        }
+        SectionCard("Public IP / ISP") {
+            when {
+                pub != null -> pub!!.forEach { (k, v) -> Metric(k, v.ifBlank { "—" }) }
+                pubErr -> Text("Couldn't fetch (no internet?)", color = MutedC, fontSize = 13.sp)
+                else -> Text("Loading…", color = MutedC, fontSize = 13.sp)
             }
         }
         SectionCard("Live data (since boot)") {
@@ -237,7 +269,6 @@ private fun SpeedScreen() {
             if (running) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(color = Red, modifier = Modifier.size(22.dp))
-                    Spacer(Modifier.height(0.dp))
                     Text("  $phase", color = OnC, fontSize = 14.sp)
                 }
                 Spacer(Modifier.height(10.dp))
@@ -249,16 +280,14 @@ private fun SpeedScreen() {
                     scope.launch {
                         try {
                             phase = "Pinging…"
-                            val p = withContext(Dispatchers.IO) { SpeedTest.ping("1.1.1.1", 443) }
-                            ping = p
+                            ping = withContext(Dispatchers.IO) { SpeedTest.ping("1.1.1.1", 443) }
                             phase = "Download…"
                             val d = withContext(Dispatchers.IO) {
                                 SpeedTest.downloadMbps(25_000_000L) { live = it }
                             }
                             down = d; live = d
                             phase = "Upload…"
-                            val u = withContext(Dispatchers.IO) { SpeedTest.uploadMbps(10_000_000L) }
-                            up = u
+                            up = withContext(Dispatchers.IO) { SpeedTest.uploadMbps(10_000_000L) }
                         } catch (e: Exception) {
                             err = e.message ?: "Test failed (no connection?)"
                         } finally {
@@ -289,6 +318,92 @@ private fun SpeedScreen() {
 }
 
 @Composable
+private fun ScanScreen() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    var lanBusy by remember { mutableStateOf(false) }
+    var lanProg by remember { mutableIntStateOf(0) }
+    var devices by remember { mutableStateOf<List<LanDevice>?>(null) }
+    var lanErr by remember { mutableStateOf<String?>(null) }
+
+    var wifiList by remember { mutableStateOf<List<WifiAp>?>(null) }
+
+    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+        Spacer(Modifier.height(10.dp))
+        SectionCard("Devices on your network") {
+            Text(
+                "Finds every device connected to the same Wi-Fi as you.",
+                color = MutedC, fontSize = 12.sp
+            )
+            Spacer(Modifier.height(10.dp))
+            if (lanBusy) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(color = Red, modifier = Modifier.size(20.dp))
+                    Text("  Scanning…  $lanProg/254", color = OnC, fontSize = 13.sp)
+                }
+            } else {
+                Button(onClick = {
+                    lanErr = null; devices = null; lanProg = 0
+                    val base = Scanner.subnetBase(NetMonitor.snapshot(ctx).ipv4)
+                    if (base == null) {
+                        lanErr = "No local IPv4 — connect to Wi-Fi first."
+                    } else {
+                        lanBusy = true
+                        scope.launch {
+                            devices = withContext(Dispatchers.IO) {
+                                Scanner.lanScan(base) { lanProg = it }
+                            }
+                            lanBusy = false
+                        }
+                    }
+                }) { Text("Scan network") }
+            }
+            lanErr?.let { Spacer(Modifier.height(8.dp)); Text(it, color = Red, fontSize = 13.sp) }
+            devices?.let { list ->
+                Spacer(Modifier.height(10.dp))
+                Text("${list.size} device(s) found", color = Green, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                list.forEach { d ->
+                    Text(d.ip, color = OnC, fontFamily = FontFamily.Monospace, fontSize = 14.sp)
+                    d.host?.let { Text("  $it", color = MutedC, fontSize = 12.sp) }
+                    Spacer(Modifier.height(6.dp))
+                }
+            }
+        }
+
+        SectionCard("Nearby Wi-Fi networks") {
+            Button(onClick = {
+                wifiList = Scanner.nearbyWifi(ctx)
+            }) { Text("Scan Wi-Fi") }
+            wifiList?.let { list ->
+                Spacer(Modifier.height(10.dp))
+                if (list.isEmpty()) {
+                    Text(
+                        "No results. Turn on Wi-Fi + Location and allow the location permission.",
+                        color = MutedC, fontSize = 12.sp
+                    )
+                } else {
+                    list.forEach { ap ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text(ap.ssid, color = OnC, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                                Text("ch ${ap.channel} · ${ap.security}", color = MutedC, fontSize = 12.sp)
+                            }
+                            Text("${ap.rssiDbm} dBm", color = OnC, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(18.dp))
+    }
+}
+
+@Composable
 private fun ToolsScreen() {
     val scope = rememberCoroutineScope()
 
@@ -296,10 +411,9 @@ private fun ToolsScreen() {
     var pingOut by remember { mutableStateOf<String?>(null) }
     var pingBusy by remember { mutableStateOf(false) }
 
-    var hostPort by remember { mutableStateOf("1.1.1.1") }
-    var port by remember { mutableStateOf("443") }
-    var checkOut by remember { mutableStateOf<String?>(null) }
-    var checkBusy by remember { mutableStateOf(false) }
+    var svcHost by remember { mutableStateOf("1.1.1.1") }
+    var svcOut by remember { mutableStateOf<List<String>?>(null) }
+    var svcBusy by remember { mutableStateOf(false) }
 
     var dnsHost by remember { mutableStateOf("github.com") }
     var dnsOut by remember { mutableStateOf<List<String>?>(null) }
@@ -314,8 +428,7 @@ private fun ToolsScreen() {
         SectionCard("Ping a host") {
             OutlinedTextField(
                 value = pingHost, onValueChange = { pingHost = it },
-                label = { Text("Host") }, singleLine = true,
-                modifier = Modifier.fillMaxWidth()
+                label = { Text("Host") }, singleLine = true, modifier = Modifier.fillMaxWidth()
             )
             Spacer(Modifier.height(8.dp))
             Button(enabled = !pingBusy, onClick = {
@@ -331,42 +444,32 @@ private fun ToolsScreen() {
             pingOut?.let { Spacer(Modifier.height(8.dp)); Text(it, color = OnC, fontSize = 13.sp) }
         }
 
-        SectionCard("Host / port reachability") {
-            OutlinedTextField(
-                value = hostPort, onValueChange = { hostPort = it },
-                label = { Text("Host") }, singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
+        SectionCard("Service ports on a host") {
+            Text("Checks common service ports (HTTP, SSH, RDP…).", color = MutedC, fontSize = 12.sp)
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
-                value = port, onValueChange = { port = it.filter { c -> c.isDigit() } },
-                label = { Text("Port") }, singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.fillMaxWidth()
+                value = svcHost, onValueChange = { svcHost = it },
+                label = { Text("Host / IP") }, singleLine = true, modifier = Modifier.fillMaxWidth()
             )
             Spacer(Modifier.height(8.dp))
-            Button(enabled = !checkBusy, onClick = {
-                checkBusy = true; checkOut = null
+            Button(enabled = !svcBusy, onClick = {
+                svcBusy = true; svcOut = null
                 scope.launch {
-                    val p = port.toIntOrNull() ?: 80
-                    val r = withContext(Dispatchers.IO) { SpeedTest.checkHostPort(hostPort.trim(), p) }
-                    checkOut = if (r.reachable)
-                        String.format("OPEN · %.0f ms · %s", r.ms, r.resolvedIp ?: "")
-                    else "CLOSED / unreachable${r.resolvedIp?.let { "  ($it)" } ?: ""}"
-                    checkBusy = false
+                    svcOut = withContext(Dispatchers.IO) { Scanner.servicePorts(svcHost.trim()) }
+                    svcBusy = false
                 }
-            }) { Text(if (checkBusy) "Checking…" else "Check") }
-            checkOut?.let {
+            }) { Text(if (svcBusy) "Scanning…" else "Scan ports") }
+            svcOut?.let { list ->
                 Spacer(Modifier.height(8.dp))
-                Text(it, color = if (it.startsWith("OPEN")) Color(0xFF66BB6A) else Red, fontSize = 13.sp)
+                if (list.isEmpty()) Text("No common ports open.", color = MutedC, fontSize = 13.sp)
+                else list.forEach { Text("OPEN  $it", color = Green, fontFamily = FontFamily.Monospace, fontSize = 13.sp) }
             }
         }
 
         SectionCard("DNS lookup") {
             OutlinedTextField(
                 value = dnsHost, onValueChange = { dnsHost = it },
-                label = { Text("Hostname") }, singleLine = true,
-                modifier = Modifier.fillMaxWidth()
+                label = { Text("Hostname") }, singleLine = true, modifier = Modifier.fillMaxWidth()
             )
             Spacer(Modifier.height(8.dp))
             Button(enabled = !dnsBusy, onClick = {
@@ -415,7 +518,7 @@ private fun UsageScreen() {
         SectionCard("Total (since last boot)") {
             Metric("Downloaded", formatBytes(s?.rxTotal ?: -1), strong = true)
             Metric("Uploaded", formatBytes(s?.txTotal ?: -1), strong = true)
-            Metric("Combined", formatBytes(((s?.rxTotal ?: 0) + (s?.txTotal ?: 0)).takeIf { s != null } ?: -1))
+            Metric("Combined", if (s == null) "—" else formatBytes(s.rxTotal + s.txTotal))
         }
         SectionCard("Mobile data (since last boot)") {
             Metric("Downloaded", formatBytes(s?.rxMobile ?: -1), strong = true)
